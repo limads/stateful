@@ -1,6 +1,103 @@
 use std::error::Error;
 use std::fmt::{Debug, Display};
-// use either::Either;
+use std::rc::Rc;
+use std::cell::RefCell;
+use std::boxed;
+
+pub trait PersistentState<T> : Sized {
+
+    /// Attempts to open UserState by deserializing it from a JSON path.
+    /// This is a blocking operation.
+    fn recover(path : &str) -> Option<Self>;
+
+    fn update(&self, target : &T);
+
+    // Saves the state to the given path by spawning a thread. This is
+    // a nonblocking operation.
+    fn persist(&self, path : &str) -> std::thread::JoinHandle<bool>;
+
+}
+
+/// Like Callbacks<A>, but defines both a set of arguments and a return type.
+#[derive(Clone, Default)]
+pub struct ValuedCallbacks<A, R>(Rc<RefCell<Vec<boxed::Box<dyn Fn(A)->R + 'static>>>>);
+
+/// Holds a set of callbacks with a given signature. Useful if several objects must respond to
+/// the same signal. If more than one object must be taken as argument, use a custom struct or
+/// tuples.
+pub type Callbacks<A> = ValuedCallbacks<A, ()>;
+
+// pub type Callbacks<A> = Rc<RefCell<Vec<boxed::Box<dyn Fn(A) + 'static>>>>;
+
+pub type BindResult<T> = Result<T, Box<dyn Error>>;
+
+impl<A, R> ValuedCallbacks<A, R> {
+
+    pub fn try_call(&self, args : A) -> BindResult<()>
+    where
+        A :  Clone
+    {
+        self.0.try_borrow()?.iter().for_each(|f| { f(args.clone()); } );
+        Ok(())
+    }
+
+    pub fn call(&self, args : A)
+    where
+        A :  Clone
+    {
+        self.0.borrow().iter().for_each(|f| { f(args.clone()); });
+    }
+
+    pub fn try_call_with_values(&self, args : A) -> BindResult<Vec<R>>
+    where
+        A :  Clone,
+        R : Sized
+    {
+        Ok(self.0.try_borrow()?.iter().map(|f| f(args.clone()) ).collect())
+    }
+
+    pub fn call_with_values(&self, args : A) -> Vec<R>
+    where
+        A :  Clone,
+        R : Sized
+    {
+        self.0.borrow().iter().map(|f| f(args.clone()) ).collect()
+    }
+
+    pub fn try_bind(&self, f : impl Fn(A)->R + 'static) -> BindResult<()> {
+        self.0.try_borrow_mut()?.push(boxed::Box::new(f));
+        Ok(())
+    }
+
+    pub fn bind(&self, f : impl Fn(A)->R + 'static) {
+        self.0.borrow_mut().push(boxed::Box::new(f));
+    }
+
+    pub fn try_count_bounded(&self) -> BindResult<usize> {
+        Ok(self.0.try_borrow()?.len())
+    }
+
+    pub fn count_bounded(&self) -> usize {
+        self.0.borrow().len()
+    }
+
+}
+
+/// Generic trait to represent interactions between Views (widgets or sets of grouped widgets affected by data change),
+/// Models (data structures that encapsulate data-modifying algorithms) and controls (widgets
+/// that modify the data contained in models). Widgets that affect a model (Controls) are represented by having the model imlement React<Widget>.
+/// Widgets that are affected by a model (Views) are represented by having the widget implement React<Model>.
+/// The implementation will usually bind one or more closures to the argument. Usually, an widget is either a control OR a view
+/// with respect to a given model, but might a assume both roles. A widget might also be a view for one model but the control for another model. Models
+/// usually encapsulate a call to glib::Receiver::attach(.), waiting for messages that change their state. The models are implemented
+/// by closures activated on "signals", implemented using Rust enums. The actual data is not held in the model structure, but is owned
+/// by a single closure executing on the main thread whenever some signal enum is received. If required, the model might spawn new
+/// threads or wait for response from worker threads, but they should never block.
+pub trait React<S> {
+
+    fn react(&self, source : &S);
+
+}
 
 /// Stateful objects for any reason can live at an invalid state. This trait simply
 /// declares which conditions an object might not be valid, associating an Error
@@ -135,4 +232,14 @@ where
     }
 
 }
+
+/*/// Assumes an operation is executed within the specified time. Perhaps
+/// Best implemented via a macro to be applied over the function
+/// call.
+pub trait Timed {
+
+    fn timed()
+
+}*/
+
 
