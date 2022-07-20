@@ -27,6 +27,14 @@ pub struct ValuedCallbacks<A, R>(Rc<RefCell<Vec<boxed::Box<dyn Fn(A)->R + 'stati
 /// tuples.
 pub type Callbacks<A> = ValuedCallbacks<A, ()>;
 
+impl<A, R> ValuedCallbacks<A, R> {
+
+    pub fn new() -> Self {
+        Self(Rc::new(RefCell::new(Vec::new())))
+    }
+
+}
+
 // pub type Callbacks<A> = Rc<RefCell<Vec<boxed::Box<dyn Fn(A) + 'static>>>>;
 
 pub type BindResult<T> = Result<T, Box<dyn Error>>;
