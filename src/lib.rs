@@ -1,8 +1,24 @@
 use std::error::Error;
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug};
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::boxed;
+
+/**
+This is a minimal design pattern crate exposing the following:
+
+![Typestate pattern](http://cliffle.com/blog/rust-typestate/): Transition trait.
+Java-style OO inheritance: Inherit trait.
+Modula-style late-binding/message-passing/signal-slot: Traits React and Message; types Callbacks<.> and ValuedCallbacks<.>, which
+are containers for slots.
+
+The crate uses only abstractions from the standard library and brings no transitive dependencies.
+
+Its main motivation was centralizing a set of traits that I kept re-inventing in my crates. As such, the crate provides
+minimal functionality, it just expose maximally generic types and traits useful for GUI code, to improve the software
+engineering side of things. Hopefully the examples are enough to represent how they might be useful for GUI code. I
+use the crate extensively to organize applications written in GTK, but the abstractions should be agnostic to GUI framework.
+**/
 
 pub trait PersistentState<T> : Sized {
 
@@ -21,6 +37,10 @@ pub trait PersistentState<T> : Sized {
 /// Like Callbacks<A>, but defines both a set of arguments and a return type.
 #[derive(Clone, Default)]
 pub struct ValuedCallbacks<A, R>(Rc<RefCell<Vec<boxed::Box<dyn Fn(A)->R + 'static>>>>);
+
+pub trait Message {
+
+}
 
 /// Holds a set of callbacks with a given signature. Useful if several objects must respond to
 /// the same signal. If more than one object must be taken as argument, use a custom struct or
@@ -239,6 +259,27 @@ where
         Ok(())
     }
 
+}
+
+/** Trait useful for Java-style inheritance. It allows T to implement 
+all of parent's methods if the parent's methods live in a trait with 
+a default implementation for T : Inherit<Self>. Note this trait only allows
+for single-parent relationships (tree-like inheritance diagram). For multiple
+inheritance (DAG-like inheritance diagram) Parent should be a trait type argument.
+A way to simulate multiple inheritance is to use Type Parent = (A, B), then to use
+the fields/methods of A use parent().0 and to use the fields/methods of B use parent().1 **/
+pub trait Inherit {
+    
+    type Parent;
+    
+    // type ParentImpl;
+    
+    /* Returns a reference to this type's parent */
+    fn parent<'a>(&'a self) -> &'a Self::Parent;
+    
+    /* Returns a mutable reference to this type's parent */
+    fn parent_mut<'a>(&'a mut self) -> &'a mut Self::Parent;
+    
 }
 
 /*/// Assumes an operation is executed within the specified time. Perhaps
