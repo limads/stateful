@@ -133,12 +133,26 @@ pub trait React<S> {
 
 }
 
-/// Stateful objects for any reason can live at an invalid state. This trait simply
-/// declares which conditions an object might not be valid, associating an Error
-/// type to your algorithm.
+/// Stateful algorithms have any computations potentially depending on
+/// their state. This trait simply makes this state explicit on a single
+/// type, rather than dispersed across fields in the structure. Tipically,
+/// state can be an enum or struct for a type T named TState.
 pub trait Stateful {
 
-    type Error : std::fmt::Display;
+    type State;
+
+    fn state(&self) -> &Self::State;
+
+    // pub trait Clear where Self : Stateful { fn clear(&mut self); }
+
+}
+
+// Perhaps add a derive macro for stateless: Its derivation can only succeed if
+// no field implements Stateful. Then the user must implement stateful for
+// all algorithms whose computation depend on the internal state. Stateless
+// is useful to denote structures that compute in/out via &mut self, but
+// use the inner state only as a cache and to avoid reallocations.
+pub trait Stateless {
 
 }
 
@@ -148,7 +162,7 @@ where
     Self : Stateful + Sized
 {
 
-    fn initialize(&mut self) -> Result<Self, <Self as Stateful>::Error>;
+    // fn initialize(&mut self) -> Result<Self, <Self as Stateful>::Error>;
 
 }
 
@@ -159,7 +173,7 @@ where
     Self : Stateful
 {
 
-    fn finalize(self) -> Result<(), <Self as Stateful>::Error>;
+    // fn finalize(self) -> Result<(), <Self as Stateful>::Error>;
 
 }
 
@@ -171,10 +185,12 @@ where
 /// first violation found.
 pub trait Verify
 where
-    Self : Debug + Sized + Stateful
+    Self : Debug + Sized
 {
 
-    fn verify(&self) -> Result<(), <Self as Stateful>::Error>;
+    type Error : std::error::Error;
+
+    fn verify(&self) -> Result<(), Self::Error>;
 
     /// # Panic
     /// Panics when the structure is not in a valid state.
@@ -201,7 +217,7 @@ where
     ///    Ok(obj) => { *obj = obj },
     ///    Err(e) => { }
     /// }
-    fn apply(mut self, mut f : impl FnMut(&mut Self)) -> Result<Self, <Self as Stateful>::Error> {
+    fn apply(mut self, mut f : impl FnMut(&mut Self)) -> Result<Self, Self::Error> {
         f(&mut self);
         match self.verify() {
             Ok(_) => Ok(self),
@@ -225,6 +241,7 @@ where
     }
 }*/
 
+/*/// A common trait for state machines.
 /// Trait implemented by structs whose state can be characterized as having one of a few
 /// discrete states at any given time. stateful structs or enumerations (usually enumerations)
 /// that can be at one of a few states known at compile time. Some of the transitions
@@ -234,6 +251,8 @@ pub trait Transition
 where
     Self : Debug + Stateful + Sized
 {
+
+    type TError : std::error::Error;
 
     /// Calls Self::try_transition, panicking when the transition is not valid.
     fn transition(&mut self, to : Self) {
@@ -247,7 +266,7 @@ where
     /// Modifies Self by setting it to another value at to. It might be the case
     /// that there isn't a valid transition between the current state and the state
     /// represented at to, in which case
-    fn try_transition(&mut self, to : Self) -> Result<(), <Self as Stateful>::Error>;
+    fn try_transition(&mut self, to : Self) -> Result<(), Self::TError>;
 
     /// Checks if a transition is legal by verifying the current state and
     /// the next possible state before attempting the transition.
@@ -255,7 +274,7 @@ where
     fn verified_transition(
         &mut self,
         to : Self
-    ) -> Result<(), <Self as Stateful>::Error>
+    ) -> Result<(), Self::TError>
     where
         Self : Verify
     {
@@ -265,7 +284,7 @@ where
         Ok(())
     }
 
-}
+}*/
 
 /** Trait useful for Java-style inheritance. It allows T to implement 
 all of parent's methods if the parent's methods live in a trait with 
@@ -1442,7 +1461,7 @@ fn test() {
     };
 }*/
 
-/* Exclusive (Heavy) types do not contain shared lightweight pointers such as
+/* Exclusive types do not contain shared lightweight pointers such as
 Rc<T> and Arc<T>. No closure is exclusive, since they can potentially capture
 shared pointers. Function pointers, however, can be exclusive. */
 pub trait Exclusive {
@@ -1546,7 +1565,7 @@ so it can be used for reading (acquiring this guard never panics, as long as the
 honors the Exclusive implementation for T::Message). It is important
 the Message type never contains Rc<T> or closures that capture Rc<T> or similar,
 causing potential reference cycles which undermine those guarantees. The user must explicitly
-state there are no reference cyles by implementing the Exclusive trait for its object. Message is supposed to be
+state there are no reference cyles by implementing the Exclusive/Unique trait for its object. Message is supposed to be
 plain old data, enums containing only plain old data, exclusive owning pointers
 and data structures (Box, Vec, etc). Implementing this
 for closure wrapper types, although possible, is discouraged, as closures might implicitly capture
@@ -1563,7 +1582,7 @@ point the last queued update(.) will be called and its corresponding on_changed 
 afterwards. You can rely on any updates queued at the previous iteration to have already been called
 after its end, but you cannot rely on updates queued at the current iteration to have already been called. */
 #[derive(Clone)]
-pub struct Shared<T>
+pub struct Deferred<T>
 where
     T : Reactive
 {
@@ -1588,7 +1607,7 @@ where
     changed : Rc<RefCell<Vec<Box<dyn Fn(&T) + 'static>>>>
 }
 
-impl<T> std::fmt::Debug for Shared<T>
+impl<T> std::fmt::Debug for Deferred<T>
 where
     T : Debug + Reactive
 {
@@ -1607,7 +1626,7 @@ where
     changed : &'a Rc<RefCell<Vec<Box<dyn Fn(&T) + 'static>>>>
 }
 
-struct Deferred<'a, T>
+struct DeferredGuard<'a, T>
 where
     T : Reactive
 {
@@ -1616,7 +1635,7 @@ where
     order : Rc<Cell<usize>>
 }
 
-impl<'a, T> Drop for Deferred<'a, T>
+impl<'a, T> Drop for DeferredGuard<'a, T>
 where
     T : Reactive
 {
@@ -1655,7 +1674,7 @@ where
     // order at impl Drop for View. This is always Some(.) while the
     // object is alive, and becomes None only inside the drop implementation.
     borrow : Option<std::cell::Ref<'a, T>>,
-    _def : Deferred<'a, T>
+    _def : DeferredGuard<'a, T>
 }
 
 impl<'a, T> Deref for View<'a, T>
@@ -1695,10 +1714,10 @@ pub struct Update<'a, T>
 where
     T : Reactive
 {
-    _def : Deferred<'a, T>
+    _def : DeferredGuard<'a, T>
 }
 
-impl<T> Shared<T>
+impl<T> Deferred<T>
 where
     T : Reactive
 {
@@ -1738,7 +1757,7 @@ where
         } else {
             None
         };
-        let def = Deferred {
+        let def = DeferredGuard {
             val : &self.val,
             op,
             order : self.order.clone()
@@ -1773,7 +1792,7 @@ where
         };
         let view = View {
             borrow : Some(self.val.borrow()),
-            _def : Deferred {
+            _def : DeferredGuard {
                 val : &self.val,
                 op,
                 order : self.order.clone()
@@ -1804,7 +1823,7 @@ fn deferred() {
         }
     }
 
-    let s = Shared::new(MyStruct(0));
+    let s = Deferred::new(MyStruct(0));
     s.on_changed(|s| { format!("Value now {}", s.0); } );
     for i in 0..3 {
         println!("Iteration {}", i);
@@ -1814,3 +1833,279 @@ fn deferred() {
     }
 
 }
+
+use std::sync::{Arc, Mutex};
+
+#[derive(Clone)]
+pub struct Pool<T> {
+    free : Arc<Mutex<Vec<T>>>,
+    init : Arc<dyn Fn()->T>
+}
+
+pub struct Instance<'a, T> {
+    pool : &'a Pool<T>,
+    val : Option<T>
+}
+
+impl<'a, T> Deref for Instance<'a, T> {
+
+    type Target=T;
+
+    fn deref(&self) -> &T {
+        self.val.as_ref().unwrap()
+    }
+}
+
+impl<'a, T> DerefMut for Instance<'a, T> {
+
+    fn deref_mut(&mut self) -> &mut T {
+        self.val.as_mut().unwrap()
+    }
+
+}
+
+impl<'a, T> Drop for Instance<'a, T> {
+
+    fn drop(&mut self) {
+        let mut free = self.pool.free.lock().unwrap();
+        free.push(self.val.take().unwrap());
+    }
+
+}
+
+impl<T> Pool<T> {
+
+    pub fn take<'a>(&'a self) -> Instance<'a, T> {
+        if let Some(val) = self.free.lock().unwrap().pop() {
+            Instance {
+                pool : self,
+                val : Some(val)
+            }
+        } else {
+            Instance {
+                pool : self,
+                val : Some((&self.init)())
+            }
+        }
+    }
+
+    pub fn new<F : Fn()->T + 'static>(f : F) -> Self {
+        Self::with_capacity(0, f)
+    }
+
+    pub fn with_capacity<F : Fn()->T + 'static>(n : usize, f : F) -> Self {
+        let mut free = Vec::with_capacity(n);
+        for _ in 0..n {
+            free.push(f());
+        }
+        Self {
+            free : Arc::new(Mutex::new(free)),
+            init : Arc::new(f)
+        }
+    }
+}
+
+/*
+The heavy and light types provide wrappers for mutable memory locations
+that always move the value. This provides the same API for Heavy<T> and
+Light<T>, and never exposes the panicking APIs of RefCell (borrow and borrow_mut).
+
+The take(.) method pretty much follows the semantics of try_borrow(.) (also for
+cell types, since it fails if the cell contains the None variant).
+
+The methods with(.) and with_mut(.) gives a clear way to reason about the possibility
+of invalid states: An invalid state is only possible if the Light(.) or Heavy(.) is
+directly or indirectly captured by the closure passed this function. Sequential calls
+to those methods are guaranteed to never fail. Since the closures return an arbitrary
+value, anything that might require the shared state recursively directly
+(or indirectly via signal/slots mechanisms) can be made after the with call,
+potentially using the returned value.
+
+For Heavy<T>, the advantage of having a guard over the value instead of over
+the mutable reference is that the mutability of the inner value can be
+bound by the user.
+
+Heavy<T> and Light<T> will implement Try (when stabilized) so that the following pattern can be used:
+
+pub struct AppState {
+
+    counter : Light<i32>,
+
+    text : Heavy<String>
+}
+
+impl AppState {
+
+    fn text<'a>(self : &'a Rc<Self>) -> Result<impl Deref<Target=String> + 'a, Box<dyn Error>> {
+        Ok(self.text?)
+    }
+
+    fn increment_counter(self : Rc<Self>) -> Result<(), Box<dyn Error>> {
+        self.counter? += 1;
+        Ok(())
+    }
+
+}
+
+Which is more explicit about AppState always following shared mutability semantics
+rather than explicit wrapping Rc<RefCell<T>> and requiring its direct use.
+*/
+
+/*
+Provides panic-free shared mutable access to a lightweight (copy) type T.
+*/
+#[derive(Clone, Debug)]
+pub struct Light<T>
+where
+    T : Copy
+{
+    data : Cell<Option<T>>
+}
+
+pub struct A {
+    val : Heavy<String>
+}
+
+impl A {
+
+    fn val<'a>(self : &'a Rc<Self>) -> impl Deref<Target=String> + 'a {
+        self.val.take().unwrap()
+    }
+
+}
+
+#[test]
+fn test_heavy() {
+
+    let a = Rc::new(A{ val : Heavy::new(String::new()) });
+    a.val();
+
+}
+
+impl<T> Light<T>
+where
+    T : Copy
+{
+
+    pub fn new(val : T) -> Self {
+        Self { data : Cell::new(Some(val)) }
+    }
+
+    pub fn take(&self) -> Option<LightGuard<T>> {
+        Some(LightGuard { shared : self, val : Some(self.data.take()?) })
+    }
+
+    pub fn with<R>(&self, f : impl Fn(&T)->R) -> Option<R> {
+        let obj = self.take()?;
+        Some(f(&obj))
+    }
+
+    pub fn with_mut<R>(&self, f : impl Fn(&mut T)->R) -> Option<R> {
+        let mut obj = self.take()?;
+        Some(f(&mut obj))
+    }
+}
+
+pub struct LightGuard<'a, T>
+where
+    T : Copy
+{
+    shared : &'a Light<T>,
+    val : Option<T>
+}
+
+impl<'a, T> Deref for LightGuard<'a, T>
+where
+    T : Copy
+{
+
+    type Target=T;
+
+    fn deref(&self) -> &T {
+        self.val.as_ref().unwrap()
+    }
+}
+
+impl<'a, T> DerefMut for LightGuard<'a, T>
+where
+    T : Copy
+{
+
+    fn deref_mut(&mut self) -> &mut T {
+        self.val.as_mut().unwrap()
+    }
+
+}
+
+impl<'a, T> Drop for LightGuard<'a, T>
+where
+    T : Copy
+{
+
+    fn drop(&mut self) {
+        let _ = self.shared.data.replace(Some(self.val.take().unwrap()));
+    }
+
+}
+
+/*
+Provides panic-free shared mutable access to a heavy (non-copy) type T.
+*/
+#[derive(Clone, Debug)]
+pub struct Heavy<T> {
+    data : RefCell<Option<T>>
+}
+
+pub struct HeavyGuard<'a, T> {
+    shared : &'a Heavy<T>,
+    val : Option<T>
+}
+
+impl<'a, T> Deref for HeavyGuard<'a, T> {
+
+    type Target=T;
+
+    fn deref(&self) -> &T {
+        self.val.as_ref().unwrap()
+    }
+}
+
+impl<'a, T> DerefMut for HeavyGuard<'a, T> {
+
+    fn deref_mut(&mut self) -> &mut T {
+        self.val.as_mut().unwrap()
+    }
+
+}
+
+impl<'a, T> Drop for HeavyGuard<'a, T> {
+
+    fn drop(&mut self) {
+        let _ = self.shared.data.replace(Some(self.val.take().unwrap()));
+    }
+
+}
+
+impl<T> Heavy<T> {
+
+    pub fn new(val : T) -> Self {
+        Self { data : RefCell::new(Some(val)) }
+    }
+
+    pub fn take(&self) -> Option<HeavyGuard<T>> {
+        Some(HeavyGuard { shared : self, val : Some(self.data.borrow_mut().take()?) })
+    }
+
+    pub fn with<R>(&self, f : impl Fn(&T)->R) -> Option<R> {
+        let obj = self.take()?;
+        Some(f(&obj))
+    }
+
+    pub fn with_mut<R>(&self, f : impl Fn(&mut T)->R) -> Option<R> {
+        let mut obj = self.take()?;
+        Some(f(&mut obj))
+    }
+
+}
+
+
