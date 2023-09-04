@@ -9,6 +9,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use std::boxed;
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 
 /**
 This is a minimal design pattern crate exposing the following:
@@ -133,13 +134,22 @@ pub trait React<S> {
 
 }
 
+/* Trait implemented by State machine's core state */
+pub trait State {
+
+}
+
+/// Trait implemented by state machines. Self::State might be Self (self-contained
+/// state machines) or a contained state (if the struct must hold stuff that is constant).
+/// The idea is that the state is restricted to the State implementor
+/// in the second case (internal state machines), and does not propagate to the remaining field.
 /// Stateful algorithms have any computations potentially depending on
 /// their state. This trait simply makes this state explicit on a single
 /// type, rather than dispersed across fields in the structure. Tipically,
 /// state can be an enum or struct for a type T named TState.
 pub trait Stateful {
 
-    type State;
+    type State : State;
 
     fn state(&self) -> &Self::State;
 
@@ -1834,8 +1844,6 @@ fn deferred() {
 
 }
 
-use std::sync::{Arc, Mutex};
-
 #[derive(Clone)]
 pub struct Pool<T> {
     free : Arc<Mutex<Vec<T>>>,
@@ -2108,4 +2116,154 @@ impl<T> Heavy<T> {
 
 }
 
+/*use std::sync::mpsc;
+
+pub enum Ownership {
+    Exclusive<Box<UnsafeCell<T>>>,
+    Shared<Rc<UnsafeCell<T>>>
+}
+
+/* If the user creates Shared<T> first, it is safe to have a Rc<T>
+shared between all instances, because there is no way to bind Unique<T>
+to the same closures where the borrowed references will be taken. When
+the user creates a Unique<T>, all newly-created Shared<T> must be
+replicated Box<T> that keep up with the channel, because there is the possibility
+of passing both Shared<T> and Unique<T> to the same closure. */
+
+/* Implements the exclusive mutability pattern. One of the instances keeps
+a mutable instance of value; while the others copy the changes to a shared
+instance. */
+#[derive(Clone)]
+pub struct Shared<T : Clone> {
+    val : Box<UnsafeCell<T>>,
+    rx : mpsc::Receiver<T>
+}
+
+pub struct Unique<T : Clone> {
+    val : Box<UnsafeCell<T>>,
+    tx : mpsc::Sender<T>,
+    rx : mpsc::Receiver<T>
+}
+
+impl<T> Unique<T> where T : Clone {
+
+    pub fn new(val : T) -> Self {
+        let (tx, rx) = mpsc::channel::<T>();
+        Self {
+            val : Box::new(UnsafeCell::new(val.clone())),
+            tx,
+            rx
+        }
+    }
+
+    pub fn share(&self) -> Shared<T> {
+        unsafe{ *self.shared.get() = self.val.get().clone(); }
+        Shared {
+            val : self.shared.clone(),
+            rx : self.rx.clone()
+        }
+    }
+
+    pub fn update<F : Fn(&mut T)>(&self, f : F) {
+        unsafe {
+            f(&mut *self.val.get());
+            self.tx.send(&*self.val.get().clone());
+        }
+    }
+
+}
+
+impl<T> Deref for Unique<T> where T : Clone  {
+
+    type Target=T;
+
+    fn deref(&self) -> &T {
+        unsafe { &*self.val.get() }
+    }
+
+}
+
+impl<T> Deref for Shared<T> where T : Clone  {
+
+    type Target=T;
+
+    fn deref(&self) -> &T {
+        if let Ok(msg) = rx.try_recv().last() {
+            unsafe { *self.val.get() = msg; }
+        }
+        unsafe { &*self.val.get() }
+    }
+
+}*/
+
+
+/* An operation executing on another thread, that might take a while
+to resolve to a given value. The implementor should hold the lock
+to the mutex while the operation is still being carried on (which
+is guaranteed by the produce(.) call. ). */
+pub struct Pending<T : Send + Sync + 'static> {
+    content : Arc<Mutex<Option<T>>>
+}
+
+pub enum Delayed<T : Send + Sync + 'static> {
+
+    /* This delayed value was already taken once */
+    Consumed,
+
+    /* This delayed value is still being computed */
+    Unavailable,
+
+    /* The computation has finished, and this is the
+    only moment the value can be taken. */
+    Available(T)
+
+}
+
+impl<T : Send + Sync + 'static> Pending<T> {
+
+    pub fn produce<F>(f : F) -> Self
+    where
+        F : Fn()-> T + Send + Sync + 'static
+    {
+        let dst = Arc::new(Mutex::new(None));
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dst_c = dst.clone();
+        let started_c = started.clone();
+        std::thread::spawn(move || {
+            let mut dst = dst_c.lock().unwrap();
+            started_c.store(true, std::sync::atomic::Ordering::Relaxed);
+            *dst = Some(f());
+        });
+
+        // It is imperative the lock is acquired
+        // before the value is returned, so that a None value
+        // means necessarily the computation hasn't finished
+        // yet from the point of view of the user.
+        while !started.load(std::sync::atomic::Ordering::Relaxed) { }
+        Pending { content : dst }
+    }
+
+    // Panics if the value was previously taken with try_take. Blocks until
+    // the value is ready otherwise.
+    pub fn wait(self) -> T {
+        self.content.lock().unwrap().take().unwrap()
+    }
+
+    // Attempts to take the value if the computation has finished.
+    // Cannot take the value again if it has, since it will be
+    // moved into Delayed::Available(val)
+    pub fn try_take(&self) -> Delayed<T> {
+        match self.content.try_lock() {
+            Ok(mut val) => if let Some(val) = val.take() {
+                Delayed::Available(val)
+            } else {
+                Delayed::Consumed
+            },
+            Err(_) => {
+                Delayed::Unavailable
+            }
+        }
+    }
+
+}
 
